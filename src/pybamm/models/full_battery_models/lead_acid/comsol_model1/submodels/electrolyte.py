@@ -9,6 +9,8 @@ from pybamm.models.submodels.electrolyte_conductivity.surface_potential_form.ful
 from pybamm.models.submodels.electrolyte_diffusion.base_electrolyte_diffusion import (
     BaseElectrolyteDiffusion,
 )
+
+from .directionality import directional_function_parameter
 COMSOL_FORM_CONCENTRATION_FLOOR = pybamm.Scalar(100.0)
 NONNEGATIVE_CONCENTRATION_FLOOR = pybamm.Scalar(0)
 
@@ -251,6 +253,34 @@ class ComsolFormElectrolyteDiffusion(BaseElectrolyteDiffusion):
 class ComsolFormSurfaceFormDifferential(SurfaceFormFullDifferential):
     """Surface-form conductivity that uses COMSOL's liquid-current law."""
 
+    def _initial_surface_potential_difference(self) -> pybamm.Symbol:
+        Domain = self.domain.capitalize()
+        return directional_function_parameter(
+            pybamm.Scalar(0),
+            charge_name=f"Charge {Domain} electrode open-circuit potential [V]",
+            discharge_name=f"Discharge {Domain} electrode open-circuit potential [V]",
+            inputs={"Electrolyte molar mass [mol.kg-1]": self.param.m(self.param.c_e_init)},
+        )
+
+    def get_fundamental_variables(self):
+        if self.domain == "separator":
+            return {}
+
+        domain, Domain = self.domain_Domain
+        delta_phi = pybamm.Variable(
+            f"{Domain} electrode surface potential difference [V]",
+            domain=f"{domain} electrode",
+            auxiliary_domains={"secondary": "current collector"},
+            reference=self._initial_surface_potential_difference(),
+        )
+        variables = self._get_standard_average_surface_potential_difference_variables(
+            pybamm.x_average(delta_phi)
+        )
+        variables.update(
+            self._get_standard_surface_potential_difference_variables(delta_phi)
+        )
+        return variables
+
     def _concentration_coefficient(
         self,
         c_e: pybamm.Symbol,
@@ -408,3 +438,26 @@ class ComsolFormSurfaceFormDifferential(SurfaceFormFullDifferential):
                 }
             )
         return variables
+
+    def set_rhs(self, variables):
+        if self.domain == "separator":
+            return
+
+        domain, Domain = self.domain_Domain
+        T = variables[f"{Domain} electrode temperature [K]"]
+        C_dl = self.domain_param.C_dl(T)
+        delta_phi = variables[f"{Domain} electrode surface potential difference [V]"]
+        i_e = variables[f"{Domain} electrolyte current density [A.m-2]"]
+        sum_a_j = variables[
+            f"Sum of {domain} electrode volumetric interfacial current densities [A.m-3]"
+        ]
+        area = variables[f"{Domain} electrode surface area to volume ratio [m-1]"]
+        self.rhs[delta_phi] = 1 / (area * C_dl) * (pybamm.div(i_e) - sum_a_j)
+
+    def set_initial_conditions(self, variables):
+        if self.domain == "separator":
+            return
+
+        Domain = self.domain.capitalize()
+        delta_phi = variables[f"{Domain} electrode surface potential difference [V]"]
+        self.initial_conditions = {delta_phi: self._initial_surface_potential_difference()}

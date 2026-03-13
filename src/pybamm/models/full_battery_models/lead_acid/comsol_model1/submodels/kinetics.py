@@ -1,45 +1,15 @@
 from __future__ import annotations
 
-import numpy as np
-
 import pybamm
 from pybamm.models.submodels.interface.kinetics.butler_volmer import AsymmetricButlerVolmer
 
-
-def _stability_floor() -> pybamm.Scalar:
-    """Small positive floor mirroring COMSOL's repeated `max(eps^2, ...)` guards."""
-
-    return pybamm.Scalar(np.finfo(float).eps**2)
-
-
-def _normalized_porosity(
-    domain: str,
-    porosity: pybamm.Symbol,
-) -> tuple[pybamm.Symbol, pybamm.Symbol]:
-    """
-    Return the COMSOL normalised porosity and remaining-capacity fraction.
-    """
-
-    floor = _stability_floor()
-    epsilon_max = pybamm.Parameter(f"Maximum porosity of {domain} electrode")
-    epsilon_min = pybamm.Parameter(f"Minimum porosity of {domain} electrode")
-    normalized_porosity = pybamm.maximum(
-        floor,
-        (porosity - epsilon_min) / (epsilon_max - epsilon_min),
-    )
-    remaining_capacity_fraction = pybamm.maximum(
-        floor,
-        -(porosity - epsilon_max) / (epsilon_max - epsilon_min),
-    )
-    return normalized_porosity, remaining_capacity_fraction
-
-
-def _discharge_branch_selector(current_a: pybamm.Symbol) -> pybamm.Symbol:
-    """
-    Map PyBaMM current sign convention onto COMSOL's charge/discharge branch switch.
-    """
-
-    return pybamm.maximum(pybamm.sign(current_a), 0)
+from .directionality import (
+    directional_function_parameter,
+    directional_parameter,
+    discharge_branch_selector as _discharge_branch_selector,
+    main_reaction_surface_area,
+    side_reaction_surface_area,
+)
 
 
 class _ComsolKineticsMixin:
@@ -51,6 +21,7 @@ class _ComsolKineticsMixin:
         eta_r: pybamm.Symbol,
         T: pybamm.Symbol,
         utilisation: pybamm.Symbol,
+        current_a: pybamm.Symbol,
         *,
         anodic_parameter: str,
         cathodic_parameter: str,
@@ -59,8 +30,16 @@ class _ComsolKineticsMixin:
         Evaluate Butler-Volmer with independent anodic and cathodic coefficients.
         """
 
-        alpha_a = pybamm.Parameter(anodic_parameter)
-        alpha_c = pybamm.Parameter(cathodic_parameter)
+        alpha_a = directional_parameter(
+            current_a,
+            charge_name=f"Charge {anodic_parameter}",
+            discharge_name=f"Discharge {anodic_parameter}",
+        )
+        alpha_c = directional_parameter(
+            current_a,
+            charge_name=f"Charge {cathodic_parameter}",
+            discharge_name=f"Discharge {cathodic_parameter}",
+        )
         Feta_RT = self.param.F * eta_r / (self.param.R * T)
         return utilisation * j0 * (
             pybamm.exp(alpha_a * Feta_RT) - pybamm.exp(-alpha_c * Feta_RT)
@@ -101,24 +80,23 @@ class ComsolMainReactionKinetics(_ComsolKineticsMixin, AsymmetricButlerVolmer):
         domain, Domain = self.domain_Domain
         porosity = variables[f"{Domain} electrode porosity"]
         current_a = variables["Current [A]"]
+        self._current_a = current_a
+        return main_reaction_surface_area(domain, current_a, porosity)
 
-        floor = _stability_floor()
-        a_max = pybamm.Parameter(f"{Domain} electrode surface area to volume ratio [m-1]")
-        discharge_morphology = pybamm.Parameter(f"{Domain} electrode morphology exponent")
-        charge_morphology = pybamm.Parameter(f"{Domain} electrode charge morphology exponent")
-        normalized_porosity, remaining_capacity_fraction = _normalized_porosity(domain, porosity)
-
-        discharge_area = pybamm.maximum(
-            floor,
-            a_max * normalized_porosity**discharge_morphology,
+    def _get_exchange_current_density(self, variables):
+        domain, Domain = self.domain_Domain
+        c_e = variables[f"{Domain} electrolyte concentration [mol.m-3]"]
+        T = variables[f"{Domain} electrode temperature [K]"]
+        if isinstance(c_e, pybamm.Broadcast) and isinstance(T, pybamm.Broadcast):
+            c_e = c_e.orphans[0]
+            T = T.orphans[0]
+        self._current_a = variables["Current [A]"]
+        return directional_function_parameter(
+            self._current_a,
+            charge_name=f"Charge {Domain} electrode exchange-current density [A.m-2]",
+            discharge_name=f"Discharge {Domain} electrode exchange-current density [A.m-2]",
+            inputs={"Electrolyte concentration [mol.m-3]": c_e, "Temperature [K]": T},
         )
-        charge_area = pybamm.maximum(
-            floor,
-            a_max * normalized_porosity**charge_morphology * remaining_capacity_fraction,
-        )
-
-        discharge_selector = _discharge_branch_selector(current_a)
-        return discharge_selector * discharge_area + (1 - discharge_selector) * charge_area
 
     def _get_kinetics(self, j0, ne, eta_r, T, u):
         del ne
@@ -128,6 +106,7 @@ class ComsolMainReactionKinetics(_ComsolKineticsMixin, AsymmetricButlerVolmer):
             eta_r,
             T,
             u,
+            self._current_a,
             anodic_parameter=f"{Domain} electrode anodic transfer coefficient",
             cathodic_parameter=f"{Domain} electrode cathodic transfer coefficient",
         )
@@ -164,9 +143,23 @@ class ComsolPositiveOxygenKinetics(_ComsolKineticsMixin, AsymmetricButlerVolmer)
     def _surface_area(self, variables: dict[str, pybamm.Symbol]) -> pybamm.Symbol:
         domain, Domain = self.domain_Domain
         porosity = variables[f"{Domain} electrode porosity"]
-        normalized_porosity, _ = _normalized_porosity(domain, porosity)
-        a_max = pybamm.Parameter(f"{Domain} electrode surface area to volume ratio [m-1]")
-        return pybamm.maximum(_stability_floor(), a_max * normalized_porosity)
+        self._current_a = variables["Current [A]"]
+        return side_reaction_surface_area(domain, self._current_a, porosity)
+
+    def _get_exchange_current_density(self, variables):
+        Domain = self.domain_Domain[1]
+        c_e = variables[f"{Domain} electrolyte concentration [mol.m-3]"]
+        T = variables[f"{Domain} electrode temperature [K]"]
+        if isinstance(c_e, pybamm.Broadcast) and isinstance(T, pybamm.Broadcast):
+            c_e = c_e.orphans[0]
+            T = T.orphans[0]
+        self._current_a = variables["Current [A]"]
+        return directional_function_parameter(
+            self._current_a,
+            charge_name="Charge Positive electrode oxygen exchange-current density [A.m-2]",
+            discharge_name="Discharge Positive electrode oxygen exchange-current density [A.m-2]",
+            inputs={"Electrolyte concentration [mol.m-3]": c_e, "Temperature [K]": T},
+        )
 
     def _get_kinetics(self, j0, ne, eta_r, T, u):
         del ne
@@ -175,6 +168,7 @@ class ComsolPositiveOxygenKinetics(_ComsolKineticsMixin, AsymmetricButlerVolmer)
             eta_r,
             T,
             u,
+            self._current_a,
             anodic_parameter="Positive oxygen anodic transfer coefficient",
             cathodic_parameter="Positive oxygen cathodic transfer coefficient",
         )
@@ -204,9 +198,8 @@ class ComsolNegativeHydrogenKinetics(_ComsolKineticsMixin, AsymmetricButlerVolme
     def _surface_area(self, variables: dict[str, pybamm.Symbol]) -> pybamm.Symbol:
         domain, Domain = self.domain_Domain
         porosity = variables[f"{Domain} electrode porosity"]
-        normalized_porosity, _ = _normalized_porosity(domain, porosity)
-        a_max = pybamm.Parameter(f"{Domain} electrode surface area to volume ratio [m-1]")
-        return pybamm.maximum(_stability_floor(), a_max * normalized_porosity)
+        self._current_a = variables["Current [A]"]
+        return side_reaction_surface_area(domain, self._current_a, porosity)
 
     def _get_exchange_current_density(self, variables):
         Domain = self.domain_Domain[1]
@@ -215,9 +208,12 @@ class ComsolNegativeHydrogenKinetics(_ComsolKineticsMixin, AsymmetricButlerVolme
         if isinstance(c_e, pybamm.Broadcast) and isinstance(T, pybamm.Broadcast):
             c_e = c_e.orphans[0]
             T = T.orphans[0]
-        return pybamm.FunctionParameter(
-            "Negative electrode hydrogen exchange-current density [A.m-2]",
-            {"Electrolyte concentration [mol.m-3]": c_e, "Temperature [K]": T},
+        self._current_a = variables["Current [A]"]
+        return directional_function_parameter(
+            self._current_a,
+            charge_name="Charge Negative electrode hydrogen exchange-current density [A.m-2]",
+            discharge_name="Discharge Negative electrode hydrogen exchange-current density [A.m-2]",
+            inputs={"Electrolyte concentration [mol.m-3]": c_e, "Temperature [K]": T},
         )
 
     def _get_number_of_electrons_in_reaction(self):
@@ -230,6 +226,7 @@ class ComsolNegativeHydrogenKinetics(_ComsolKineticsMixin, AsymmetricButlerVolme
             eta_r,
             T,
             u,
+            self._current_a,
             anodic_parameter="Negative hydrogen anodic transfer coefficient",
             cathodic_parameter="Negative hydrogen cathodic transfer coefficient",
         )

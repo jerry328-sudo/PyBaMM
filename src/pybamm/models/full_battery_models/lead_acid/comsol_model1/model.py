@@ -62,9 +62,20 @@ class COMSOLModel1(Full):
     def set_open_circuit_potential_submodel(self) -> None:
         from .submodels.open_circuit_potential import (
             ComsolConstantSideReactionOpenCircuitPotential,
+            ComsolMainReactionOpenCircuitPotential,
         )
 
-        super().set_open_circuit_potential_submodel()
+        for domain in ["negative", "positive"]:
+            self.submodels[f"{domain} open-circuit potential"] = (
+                ComsolMainReactionOpenCircuitPotential(
+                    self.param,
+                    domain,
+                    "lead-acid main",
+                    self.options,
+                    "primary",
+                )
+            )
+
         self.submodels["positive oxygen open-circuit potential"] = (
             ComsolConstantSideReactionOpenCircuitPotential(
                 self.param,

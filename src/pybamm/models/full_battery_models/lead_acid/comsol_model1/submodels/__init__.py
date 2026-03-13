@@ -15,7 +15,10 @@ from .kinetics import (
     ComsolNegativeHydrogenKinetics,
     ComsolPositiveOxygenKinetics,
 )
-from .open_circuit_potential import ComsolConstantSideReactionOpenCircuitPotential
+from .open_circuit_potential import (
+    ComsolConstantSideReactionOpenCircuitPotential,
+    ComsolMainReactionOpenCircuitPotential,
+)
 from .porosity import ComsolReactionDrivenPorosity
 from .total_interfacial_current import ComsolLeadAcidTotalInterfacialCurrent
 from .transport_efficiency import ComsolTransportEfficiency
@@ -26,6 +29,7 @@ __all__ = [
     "ComsolCurrentDistributionConstantPorosity",
     "ComsolCurrentDistributionInitializationSurfaceForm",
     "ComsolMainReactionInitialization",
+    "ComsolMainReactionOpenCircuitPotential",
     "ComsolFormElectrolyteDiffusion",
     "ComsolFormSurfaceFormDifferential",
     "ComsolLeadAcidTotalInterfacialCurrent",
