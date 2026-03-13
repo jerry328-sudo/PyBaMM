@@ -109,6 +109,32 @@ parameter_sets = EntryPoint(group="pybamm_parameter_sets")
 models = EntryPoint(group="pybamm_models")
 
 
+def _register_builtin_extensions() -> None:
+    """
+    Register in-tree extensions that are shipped inside the vendored source tree.
+
+    Editable source trees can gain new models and parameter sets without the package
+    metadata being reinstalled. Registering them here keeps the dispatch API in sync
+    with the checked-out code.
+    """
+
+    from pybamm.input.parameters.lead_acid.COMSOLModel1 import (
+        get_parameter_values as get_comsol_model1_parameter_values,
+    )
+    from pybamm.models.full_battery_models.lead_acid.comsol_model1.model import (
+        COMSOLModel1,
+    )
+
+    parameter_sets._all_entries.setdefault(
+        "COMSOLModel1",
+        get_comsol_model1_parameter_values,
+    )
+    models._all_entries.setdefault("COMSOLModel1", COMSOLModel1)
+
+
+_register_builtin_extensions()
+
+
 def Model(model: str, *args, **kwargs):
     """
     Returns the loaded model object
