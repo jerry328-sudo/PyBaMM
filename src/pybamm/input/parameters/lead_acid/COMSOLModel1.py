@@ -9,7 +9,6 @@ from pybamm.parameters.process_parameter_data import process_1D_data
 
 from .Sulzer2019 import get_parameter_values as get_sulzer2019_parameter_values
 
-
 _DATA_DIR = Path(__file__).resolve().parent / "data" / "comsol_model1"
 
 
@@ -131,6 +130,32 @@ NEGATIVE_OCP_TABLE = _load_material_table("pb_equilibrium_potential_Eeq_Pb_int1(
 POSITIVE_OCP_TABLE = _load_material_table("pbo2_equilibrium_potential_Eeq_PbO2_int1(c).csv")
 
 
+def _stability_floor() -> pybamm.Scalar:
+    """Return the small positive floor used in COMSOL concentration guards."""
+
+    return pybamm.Scalar(np.finfo(float).eps**2)
+
+
+def _reference_electrolyte_concentration() -> pybamm.Parameter:
+    """Return COMSOL Model1's shared electrolyte reference concentration parameter."""
+
+    return pybamm.Parameter("Reference electrolyte concentration [mol.m-3]")
+
+
+def _reference_concentration_ratio(c_e: pybamm.Symbol | float) -> pybamm.Symbol:
+    """Return the electrolyte concentration ratio against the shared reference."""
+
+    return c_e / _reference_electrolyte_concentration()
+
+
+def _regularized_reference_concentration_ratio(
+    c_e: pybamm.Symbol | float,
+) -> pybamm.Symbol:
+    """Return the COMSOL-style guarded concentration ratio for main-reaction kinetics."""
+
+    return pybamm.maximum(_stability_floor(), _reference_concentration_ratio(c_e))
+
+
 def electrolyte_diffusivity(c_e: pybamm.Symbol | float) -> pybamm.Symbol | float:
     """Electrolyte diffusivity from the COMSOL materials database."""
 
@@ -216,7 +241,8 @@ def negative_exchange_current_density(
     """Main negative-reaction exchange current density from COMSOL Model1."""
 
     del temperature_k
-    return 0.03 * (c_e / 4890.0) ** 0.0
+    gamma = pybamm.Parameter("Negative electrode main reaction concentration exponent")
+    return 0.03 * _regularized_reference_concentration_ratio(c_e) ** gamma
 
 
 def positive_exchange_current_density(
@@ -226,7 +252,8 @@ def positive_exchange_current_density(
     """Main positive-reaction exchange current density from COMSOL Model1."""
 
     del temperature_k
-    return 0.003 * (c_e / 4890.0) ** 0.0
+    gamma = pybamm.Parameter("Positive electrode main reaction concentration exponent")
+    return 0.003 * _regularized_reference_concentration_ratio(c_e) ** gamma
 
 
 def positive_oxygen_exchange_current_density(
@@ -236,7 +263,7 @@ def positive_oxygen_exchange_current_density(
     """Positive OER exchange current density from COMSOL Model1."""
 
     del temperature_k
-    return 1.0e-23 * (c_e / 4890.0) ** 2
+    return 1.0e-23 * _reference_concentration_ratio(c_e) ** 2
 
 
 def negative_hydrogen_exchange_current_density(
@@ -246,7 +273,7 @@ def negative_hydrogen_exchange_current_density(
     """Negative HER exchange current density from COMSOL Model1."""
 
     del temperature_k
-    return 1.0e-9 * c_e / 4890.0
+    return 1.0e-9 * _reference_concentration_ratio(c_e)
 
 
 def get_parameter_values() -> dict[str, object]:
@@ -292,6 +319,7 @@ def get_parameter_values() -> dict[str, object]:
             "Number of cells connected in series to make a battery": 1.0,
             "Lower voltage cut-off [V]": 1.75,
             "Upper voltage cut-off [V]": 2.4,
+            "Reference electrolyte concentration [mol.m-3]": 4890.0,
             "Initial concentration in electrolyte [mol.m-3]": 4890.0,
             "Electrode height [m]": 0.07,
             "Electrode width [m]": 0.038,
@@ -327,6 +355,8 @@ def get_parameter_values() -> dict[str, object]:
             "Positive electrode charge morphology exponent": 1.0,
             "Negative electrode double-layer capacity [F.m-2]": 0.2,
             "Positive electrode double-layer capacity [F.m-2]": 0.2,
+            "Negative electrode main reaction concentration exponent": 0.0,
+            "Positive electrode main reaction concentration exponent": 0.0,
             "Charge Negative electrode exchange-current density [A.m-2]": negative_exchange_current_density,
             "Discharge Negative electrode exchange-current density [A.m-2]": negative_exchange_current_density,
             "Charge Positive electrode exchange-current density [A.m-2]": positive_exchange_current_density,
